@@ -10,7 +10,7 @@
 
   // Prevent duplicate submission if ChatGPT re-renders or the content script
   // is injected again for the same navigation.
-  const submissionKey = `dia-chatgpt-autosend:${window.location.href}`;
+  const submissionKey = `chrome-chatgpt-autosend:${window.location.href}`;
   if (sessionStorage.getItem(submissionKey) === "done") return;
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -163,7 +163,7 @@
     }
 
     console.warn(
-      "[ChatGPT Auto-Send for Dia] Timed out waiting for the ChatGPT composer."
+      "[ChatGPT Auto-Send for Chrome] Timed out waiting for the ChatGPT composer."
     );
   }
 

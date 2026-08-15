@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "ChatGPT Auto-Send for Dia",
+  "name": "ChatGPT Auto-Send for Chrome",
   "version": "1.0.0",
-  "description": "Automatically submits ChatGPT prompts opened from a Dia custom site-search shortcut.",
+  "description": "Automatically submits ChatGPT prompts opened from a Chrome custom site-search shortcut.",
   "content_scripts": [
     {
       "matches": [
