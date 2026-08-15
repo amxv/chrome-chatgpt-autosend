@@ -7,7 +7,7 @@ This tiny Chrome extension turns a Chrome custom site-search shortcut into:
 ## Install in Chrome
 
 1. Clone or download this repository somewhere you will keep it.
-2. Open `chrome://extensions`.
+2. Open `chrome://extensions` or `dia://extensions` or similar.
 3. Turn on **Developer mode** (top right toggle).
 4. Click **Load unpacked**.
 5. Select the `chrome-chatgpt-autosend` folder.
