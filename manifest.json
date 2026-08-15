@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "ChatGPT Auto-Send for Dia",
+  "version": "1.0.0",
+  "description": "Automatically submits ChatGPT prompts opened from a Dia custom site-search shortcut.",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
