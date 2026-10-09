@@ -1,23 +1,25 @@
 (() => {
   "use strict";
 
-  // Only act on URLs created specifically for this extension.
+  // Capture q as early as possible: ChatGPT now removes it from the URL while
+  // transferring its contents into the composer.
   const url = new URL(window.location.href);
-  const query = url.searchParams.get("q");
-  const autoSend = url.searchParams.get("autosend");
+  if (url.searchParams.get("autosend") !== "1") return;
+  const query = url.searchParams.get("q")?.trim() || "";
 
-  if (!query || autoSend !== "1") return;
-
-  // Prevent duplicate submission if ChatGPT re-renders or the content script
-  // is injected again for the same navigation.
-  const submissionKey = `chrome-chatgpt-autosend:${window.location.href}`;
-  if (sessionStorage.getItem(submissionKey) === "done") return;
+  // A second injection into the same document must not submit again. Unlike
+  // sessionStorage, a document-local guard still permits the next site search
+  // (including an identical query) in the same tab.
+  const startedKey = "__chromeChatgptAutosendStarted";
+  if (window[startedKey]) return;
+  window[startedKey] = true;
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   function getPromptElement() {
     return (
       document.querySelector("#prompt-textarea") ||
+      document.querySelector('textarea[data-testid="prompt-textarea"]') ||
       document.querySelector('textarea[placeholder*="Message"]') ||
       document.querySelector('textarea[placeholder*="message"]') ||
       document.querySelector('main [contenteditable="true"]') ||
@@ -77,34 +79,40 @@
     return false;
   }
 
-  function getSendButton() {
+  function getSendButton(prompt) {
     const selectors = [
       'button[data-testid="send-button"]',
       'button[data-testid="composer-submit-button"]',
       'button[aria-label="Send prompt"]',
       'button[aria-label="Send message"]',
+      'button[aria-label="Send"]',
       'form button[type="submit"]'
     ];
 
-    for (const selector of selectors) {
-      const buttons = [...document.querySelectorAll(selector)];
-      const button = buttons.find((el) => {
-        const style = getComputedStyle(el);
-        return (
-          !el.disabled &&
-          el.getAttribute("aria-disabled") !== "true" &&
-          style.display !== "none" &&
-          style.visibility !== "hidden"
-        );
-      });
-      if (button) return button;
+    // Prefer controls attached to this composer over unrelated page buttons.
+    for (const root of [prompt.closest("form"), document]) {
+      if (!root) continue;
+      for (const selector of selectors) {
+        const button = [...root.querySelectorAll(selector)].find((el) => {
+          const style = getComputedStyle(el);
+          return (
+            !el.disabled &&
+            el.getAttribute("aria-disabled") !== "true" &&
+            style.display !== "none" &&
+            style.visibility !== "hidden"
+          );
+        });
+        if (button) return button;
+      }
     }
 
     return null;
   }
 
   async function run() {
-    const deadline = Date.now() + 20000;
+    const startedAt = Date.now();
+    const deadline = startedAt + 20000;
+    let triedEnter = false;
 
     while (Date.now() < deadline) {
       const prompt = getPromptElement();
@@ -112,49 +120,44 @@
       if (prompt) {
         let current = promptText(prompt);
 
-        // ChatGPT normally fills ?q= for us. If it hasn't yet, wait briefly,
-        // then fill it ourselves as a fallback.
-        if (!current) {
-          await sleep(250);
+        // Let ChatGPT prefill the composer. Only insert text ourselves if we
+        // captured q; the post-redirect URL may contain only autosend=1.
+        if (!current && query && Date.now() - startedAt >= 2000) {
+          setPromptText(prompt, query);
+          await sleep(200);
           current = promptText(prompt);
-          if (!current) {
-            setPromptText(prompt, query);
-            await sleep(250);
-            current = promptText(prompt);
-          }
         }
 
-        if (current) {
-          const sendButton = getSendButton();
+        // Never send an unrelated draft if the composer changes unexpectedly.
+        if (current && (!query || current === query)) {
+          const sendButton = getSendButton(prompt);
 
           if (sendButton) {
-            sessionStorage.setItem(submissionKey, "done");
             sendButton.click();
             return;
           }
 
-          // Fallback for UI revisions where the send button selector changed.
-          prompt.focus();
-          const eventInit = {
-            key: "Enter",
-            code: "Enter",
-            keyCode: 13,
-            which: 13,
-            bubbles: true,
-            cancelable: true,
-            ctrlKey: false,
-            metaKey: false,
-            shiftKey: false,
-            altKey: false
-          };
-          prompt.dispatchEvent(new KeyboardEvent("keydown", eventInit));
-          prompt.dispatchEvent(new KeyboardEvent("keyup", eventInit));
-
-          // Give the UI a moment to react. If the prompt was cleared, it sent.
-          await sleep(500);
-          if (!promptText(prompt)) {
-            sessionStorage.setItem(submissionKey, "done");
-            return;
+          // Give the UI time to enable the send button before trying Enter.
+          // Only dispatch it once, since retries could duplicate a submission.
+          if (!triedEnter && Date.now() - startedAt >= 4000) {
+            triedEnter = true;
+            prompt.focus();
+            const eventInit = {
+              key: "Enter",
+              code: "Enter",
+              keyCode: 13,
+              which: 13,
+              bubbles: true,
+              cancelable: true,
+              ctrlKey: false,
+              metaKey: false,
+              shiftKey: false,
+              altKey: false
+            };
+            prompt.dispatchEvent(new KeyboardEvent("keydown", eventInit));
+            prompt.dispatchEvent(new KeyboardEvent("keyup", eventInit));
+            await sleep(500);
+            if (!promptText(prompt)) return;
           }
         }
       }
@@ -163,7 +166,7 @@
     }
 
     console.warn(
-      "[ChatGPT Auto-Send for Chrome] Timed out waiting for the ChatGPT composer."
+      "[ChatGPT Auto-Send for Chrome] Timed out waiting for a matching prompt and enabled send button."
     );
   }
 

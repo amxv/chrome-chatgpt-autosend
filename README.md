@@ -10,7 +10,10 @@ This tiny Chrome extension turns a Chrome custom site-search shortcut into:
 2. Open `chrome://extensions` or `dia://extensions` or similar.
 3. Turn on **Developer mode** (top right toggle).
 4. Click **Load unpacked**.
-5. Select the `chrome-chatgpt-autosend` folder.
+5. Select the `dia-chatgpt-autosend` folder.
+
+After updating an existing installation, click **Reload** for the extension on
+`chrome://extensions` (or the equivalent page in your browser).
 
 ## Configure your Chrome site search
 
@@ -34,12 +37,19 @@ Then use:
 c what is the fastest way to learn Rust?
 ```
 
-Chrome recognizes `c` + Space (or Tab) as the site-search shortcut. When you press Enter, ChatGPT opens, the extension sees `autosend=1`, and submits the `q` prompt once the composer is ready.
+Chrome recognizes `c` + Space (or Tab) as the site-search shortcut. When you press Enter, ChatGPT opens, the extension sees `autosend=1`, and submits your prompt once the composer is ready. This also works when ChatGPT removes the `q` URL parameter after filling its composer.
 
 ## Notes
 
 - The extension only auto-sends when `autosend=1` is present.
 - It only runs on `https://chatgpt.com/*`.
-- It stores a per-navigation marker in `sessionStorage` to avoid duplicate sends.
+- It submits at most once per page load, even if injected more than once. Each
+  new site search can still submit the same prompt again.
+- It captures `q` at document start if available. If ChatGPT has already removed
+  `q`, it waits for ChatGPT to prefill the composer instead.
 - ChatGPT's web UI can change. The script includes several send-button selectors plus an Enter-key fallback.
 
+## Tests
+
+Run `node --test tests/content.test.cjs` to exercise URL cleanup, delayed
+composer rendering, and one-shot submission behavior without a ChatGPT login.
