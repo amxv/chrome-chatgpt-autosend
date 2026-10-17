@@ -4,7 +4,11 @@
   // Capture q as early as possible: ChatGPT now removes it from the URL while
   // transferring its contents into the composer.
   const url = new URL(window.location.href);
-  if (url.searchParams.get("autosend") !== "1") return;
+
+  // The autosend value must match the local secret (secret.js), so a crafted
+  // link from another site cannot submit a prompt as the signed-in user.
+  const secret = typeof AUTOSEND_SECRET === "string" ? AUTOSEND_SECRET : "";
+  if (secret.length < 16 || url.searchParams.get("autosend") !== secret) return;
   const query = url.searchParams.get("q")?.trim() || "";
 
   // A second injection into the same document must not submit again. Unlike
@@ -170,5 +174,22 @@
     );
   }
 
-  run();
+  // The background worker approves only navigations that came from an omnibox
+  // keyword search, which a link or redirect cannot produce.
+  async function approved() {
+    try {
+      const reply = await chrome.runtime.sendMessage({ type: "autosend-approval" });
+      return reply?.approved === true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  approved().then((ok) => {
+    if (ok) {
+      run();
+    } else {
+      console.warn("[ChatGPT Auto-Send for Chrome] Navigation was not an omnibox search; not sending.");
+    }
+  });
 })();

@@ -4,15 +4,18 @@ const { join } = require("node:path");
 const { test } = require("node:test");
 const vm = require("node:vm");
 
+const SECRET = "test-secret-0123456789";
 const source = readFileSync(join(__dirname, "..", "content.js"), "utf8");
 
 function makePage({
-  url = "https://chatgpt.com/?autosend=1",
+  url = `https://chatgpt.com/?autosend=${SECRET}`,
   prefill = "",
   prefillAt = 0,
   composerAt = 0,
   sendEnabledAt = 0,
-  sendSelector = 'button[data-testid="send-button"]'
+  sendSelector = 'button[data-testid="send-button"]',
+  secret = SECRET,
+  approved = true
 } = {}) {
   let time = 0;
   let entered = "";
@@ -54,6 +57,10 @@ function makePage({
     window,
     document,
     URL,
+    AUTOSEND_SECRET: secret,
+    chrome: {
+      runtime: { sendMessage: async () => ({ approved }) }
+    },
     HTMLTextAreaElement: TextArea,
     HTMLInputElement: class {},
     Event: class { constructor(type) { this.type = type; } },
@@ -89,14 +96,14 @@ test("sends a prefilled composer when ChatGPT has already removed q", async () =
 
 test("captures q before ChatGPT removes it and waits for the composer", async () => {
   const page = makePage({
-    url: "https://chatgpt.com/?q=hello%20world&autosend=1",
+    url: `https://chatgpt.com/?q=hello%20world&autosend=${SECRET}`,
     prefill: "hello world",
     prefillAt: 1200,
     composerAt: 600,
     sendEnabledAt: 1600
   });
   page.execute();
-  page.window.location.href = "https://chatgpt.com/?autosend=1";
+  page.window.location.href = `https://chatgpt.com/?autosend=${SECRET}`;
   await page.settle();
   assert.deepEqual(page.sends.map((send) => send.text), ["hello world"]);
   assert.ok(page.sends[0].at >= 1600);
@@ -104,7 +111,7 @@ test("captures q before ChatGPT removes it and waits for the composer", async ()
 
 test("fills from q if ChatGPT never prepopulates the composer", async () => {
   const page = makePage({
-    url: "https://chatgpt.com/?q=fallback&autosend=1"
+    url: `https://chatgpt.com/?q=fallback&autosend=${SECRET}`
   });
   page.execute();
   await page.settle();
@@ -141,7 +148,7 @@ test("never submits an empty composer if q is gone", async () => {
 
 test("does not submit an unrelated pre-existing draft", async () => {
   const page = makePage({
-    url: "https://chatgpt.com/?q=expected&autosend=1",
+    url: `https://chatgpt.com/?q=expected&autosend=${SECRET}`,
     prefill: "different text"
   });
   page.execute();
@@ -155,4 +162,29 @@ test("repeated injection into one document cannot duplicate a send", async () =>
   page.execute();
   await page.settle();
   assert.deepEqual(page.sends.map((send) => send.text), ["hello"]);
+});
+
+test("never sends when autosend does not match the secret", async () => {
+  const page = makePage({ url: "https://chatgpt.com/?q=hi&autosend=1", prefill: "hi" });
+  page.execute();
+  await page.settle();
+  assert.equal(page.sends.length, 0);
+});
+
+test("never sends when the secret is unset or too short", async () => {
+  const page = makePage({
+    url: "https://chatgpt.com/?q=hi&autosend=short",
+    prefill: "hi",
+    secret: "short"
+  });
+  page.execute();
+  await page.settle();
+  assert.equal(page.sends.length, 0);
+});
+
+test("never sends when the background worker denies approval", async () => {
+  const page = makePage({ prefill: "hi", approved: false });
+  page.execute();
+  await page.settle();
+  assert.equal(page.sends.length, 0);
 });
