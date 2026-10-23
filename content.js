@@ -5,11 +5,10 @@
   // transferring its contents into the composer.
   const url = new URL(window.location.href);
 
-  // The autosend value must match the local secret (secret.js), so a crafted
-  // link from another site cannot submit a prompt as the signed-in user.
-  const secret = typeof AUTOSEND_SECRET === "string" ? AUTOSEND_SECRET : "";
-  if (secret.length < 16 || url.searchParams.get("autosend") !== secret) return;
-  const query = url.searchParams.get("q")?.trim() || "";
+  // The background worker owns the secret and checks the browser's navigation
+  // metadata. The content script never reads the secret or trusts the URL alone.
+  if (!/^[0-9a-f]{32}$/.test(url.searchParams.get("autosend") || "")) return;
+  const queryAtStart = url.searchParams.get("q")?.trim() || "";
 
   // A second injection into the same document must not submit again. Unlike
   // sessionStorage, a document-local guard still permits the next site search
@@ -113,7 +112,7 @@
     return null;
   }
 
-  async function run() {
+  async function run(query) {
     const startedAt = Date.now();
     const deadline = startedAt + 20000;
     let triedEnter = false;
@@ -125,7 +124,7 @@
         let current = promptText(prompt);
 
         // Let ChatGPT prefill the composer. Only insert text ourselves if we
-        // captured q; the post-redirect URL may contain only autosend=1.
+        // captured q; ChatGPT may strip q from the address bar afterwards.
         if (!current && query && Date.now() - startedAt >= 2000) {
           setPromptText(prompt, query);
           await sleep(200);
@@ -133,7 +132,7 @@
         }
 
         // Never send an unrelated draft if the composer changes unexpectedly.
-        if (current && (!query || current === query)) {
+        if (current && current === query) {
           const sendButton = getSendButton(prompt);
 
           if (sendButton) {
@@ -174,20 +173,24 @@
     );
   }
 
-  // The background worker approves only navigations that came from an omnibox
-  // keyword search, which a link or redirect cannot produce.
+  // The worker returns the query from the approved navigation, not from the
+  // current address bar (which ChatGPT can modify via history.replaceState).
   async function approved() {
     try {
       const reply = await chrome.runtime.sendMessage({ type: "autosend-approval" });
-      return reply?.approved === true;
+      if (reply?.approved !== true || typeof reply.query !== "string" || !reply.query.trim()) {
+        return null;
+      }
+      if (queryAtStart && queryAtStart !== reply.query) return null;
+      return reply.query;
     } catch (_) {
-      return false;
+      return null;
     }
   }
 
-  approved().then((ok) => {
-    if (ok) {
-      run();
+  approved().then((query) => {
+    if (query) {
+      run(query);
     } else {
       console.warn("[ChatGPT Auto-Send for Chrome] Navigation was not an omnibox search; not sending.");
     }

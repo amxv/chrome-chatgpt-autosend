@@ -4,7 +4,7 @@ const { join } = require("node:path");
 const { test } = require("node:test");
 const vm = require("node:vm");
 
-const SECRET = "test-secret-0123456789";
+const SECRET = "abcdef0123456789abcdef0123456789";
 const source = readFileSync(join(__dirname, "..", "content.js"), "utf8");
 
 function makePage({
@@ -14,8 +14,8 @@ function makePage({
   composerAt = 0,
   sendEnabledAt = 0,
   sendSelector = 'button[data-testid="send-button"]',
-  secret = SECRET,
-  approved = true
+  approved = true,
+  approvedQuery
 } = {}) {
   let time = 0;
   let entered = "";
@@ -53,13 +53,15 @@ function makePage({
   };
 
   const window = { location: { href: url } };
+  const query = approvedQuery === undefined
+    ? (new URL(url).searchParams.get("q")?.trim() || prefill)
+    : approvedQuery;
   const context = vm.createContext({
     window,
     document,
     URL,
-    AUTOSEND_SECRET: secret,
     chrome: {
-      runtime: { sendMessage: async () => ({ approved }) }
+      runtime: { sendMessage: async () => ({ approved, query }) }
     },
     HTMLTextAreaElement: TextArea,
     HTMLInputElement: class {},
@@ -164,18 +166,17 @@ test("repeated injection into one document cannot duplicate a send", async () =>
   assert.deepEqual(page.sends.map((send) => send.text), ["hello"]);
 });
 
-test("never sends when autosend does not match the secret", async () => {
+test("old autosend=1 no longer sends", async () => {
   const page = makePage({ url: "https://chatgpt.com/?q=hi&autosend=1", prefill: "hi" });
   page.execute();
   await page.settle();
   assert.equal(page.sends.length, 0);
 });
 
-test("never sends when the secret is unset or too short", async () => {
+test("malformed autosend values do not trigger an approval request", async () => {
   const page = makePage({
     url: "https://chatgpt.com/?q=hi&autosend=short",
-    prefill: "hi",
-    secret: "short"
+    prefill: "hi"
   });
   page.execute();
   await page.settle();
@@ -184,6 +185,24 @@ test("never sends when the secret is unset or too short", async () => {
 
 test("never sends when the background worker denies approval", async () => {
   const page = makePage({ prefill: "hi", approved: false });
+  page.execute();
+  await page.settle();
+  assert.equal(page.sends.length, 0);
+});
+
+test("never sends without a query in the approved navigation", async () => {
+  const page = makePage({ prefill: "old draft", approvedQuery: "" });
+  page.execute();
+  await page.settle();
+  assert.equal(page.sends.length, 0);
+});
+
+test("never sends if the URL query differs from the approved navigation", async () => {
+  const page = makePage({
+    url: `https://chatgpt.com/?q=original&autosend=${SECRET}`,
+    approvedQuery: "tampered",
+    prefill: "tampered"
+  });
   page.execute();
   await page.settle();
   assert.equal(page.sends.length, 0);
