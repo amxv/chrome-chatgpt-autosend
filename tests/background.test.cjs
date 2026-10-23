@@ -67,11 +67,12 @@ function makeWorker({ secret = SECRET } = {}) {
     documentId = "document-a",
     frameId = 0,
     transitionType = "keyword",
+    transitionQualifiers = [],
     q = "test prompt",
     token = SECRET,
     url = target({ q, token })
   } = {}) {
-    await listeners.committed({ tabId, documentId, frameId, transitionType, url });
+    await listeners.committed({ tabId, documentId, frameId, transitionType, transitionQualifiers, url });
   }
 
   function message({
@@ -148,8 +149,37 @@ test("allows generated omnibox navigations", async () => {
   assert.equal((await worker.message()).approved, true);
 });
 
+test("allows Dia's typed omnibox site-search navigation", async () => {
+  // Dia's recorded history transition: typed + from_address_bar.
+  const worker = makeWorker();
+  await worker.nav({ transitionType: "typed", transitionQualifiers: ["from_address_bar"], q: "hi" });
+  const approved = await worker.message();
+  assert.equal(approved.approved, true);
+  assert.equal(approved.query, "hi");
+  assert.equal((await worker.message()).approved, false);
+});
+
+test("does not approve typed navigations without an address-bar qualifier", async () => {
+  const worker = makeWorker();
+  await worker.nav({ transitionType: "typed" });
+  assert.equal((await worker.message()).approved, false);
+});
+
+test("rejects redirect navigations even if tagged as typed or keyword", async () => {
+  for (const transitionType of ["typed", "keyword", "generated"]) {
+    for (const qualifier of ["client_redirect", "server_redirect"]) {
+      const worker = makeWorker();
+      await worker.nav({
+        transitionType,
+        transitionQualifiers: transitionType === "typed" ? ["from_address_bar", qualifier] : [qualifier]
+      });
+      assert.equal((await worker.message()).approved, false, `${transitionType}: ${qualifier}`);
+    }
+  }
+});
+
 test("rejects links, redirects, reloads and non-omnibox navigations even with the secret", async () => {
-  for (const transitionType of ["link", "typed", "reload", "form_submit", "auto_bookmark", "keyword_generated"]) {
+  for (const transitionType of ["link", "reload", "form_submit", "auto_bookmark", "keyword_generated"]) {
     const worker = makeWorker();
     await worker.nav({ transitionType });
     assert.equal((await worker.message()).approved, false, transitionType);

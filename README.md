@@ -48,8 +48,9 @@ Chrome recognizes `c` + Space (or Tab) as the site-search shortcut. When you pre
 ## Notes
 
 - The extension only auto-sends when `autosend` matches your secret **and**
-  Chrome reports the navigation as an omnibox search (`webNavigation`
-  transition type `keyword` or `generated`). Links, redirects and `window.open`
+  the browser reports an address-bar navigation (`webNavigation` transition
+  type `typed` in Dia, `keyword` or `generated` in other Chromium browsers).
+  Links, redirects and `window.open`
   from other sites do not auto-send, even with the secret.
   Without this, any web page could submit prompts as you, including prompts
   that use your ChatGPT connectors or memory.

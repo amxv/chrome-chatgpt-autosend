@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "minimum_chrome_version": "106",
   "name": "ChatGPT Auto-Send for Chrome",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Automatically submits ChatGPT prompts opened from a Chrome custom site-search shortcut.",
   "content_scripts": [
     {

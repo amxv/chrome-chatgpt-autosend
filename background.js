@@ -1,8 +1,10 @@
 "use strict";
 
-// Chrome labels custom site searches as "keyword". "generated" also denotes
-// an omnibox-generated search suggestion, not a link or window.open.
-const OMNIBOX_TRANSITIONS = new Set(["keyword", "generated"]);
+// Dia reports custom site searches as "typed" (confirmed in its History
+// transition records). Other Chromium browsers may use "keyword" or
+// "generated". All three mean a browser/omnibox-initiated navigation, not a
+// website link or window.open.
+const OMNIBOX_TRANSITIONS = new Set(["typed", "keyword", "generated"]);
 const APPROVAL_TTL_MS = 30000;
 const APPROVAL_WAIT_ATTEMPTS = 20;
 const APPROVAL_WAIT_MS = 100;
@@ -51,6 +53,16 @@ const approvalKey = (tabId, documentId) => `approval:${tabId}:${documentId}`;
 chrome.webNavigation.onCommitted.addListener(async (details) => {
   if (details.frameId !== 0 || !details.documentId ||
       !OMNIBOX_TRANSITIONS.has(details.transitionType)) return;
+
+  // Dia's `typed` site-search visits carry the address-bar qualifier. Do not
+  // approve a navigation merely because some other source labeled it typed.
+  if (details.transitionType === "typed" &&
+      !details.transitionQualifiers?.includes("from_address_bar")) return;
+
+  // A redirect must not inherit an otherwise eligible transition. The
+  // browser exposes redirects as qualifiers, regardless of transition type.
+  if (details.transitionQualifiers?.some((qualifier) =>
+    qualifier === "server_redirect" || qualifier === "client_redirect")) return;
 
   const url = new URL(details.url);
   if (url.origin !== "https://chatgpt.com" || url.pathname !== "/") return;
