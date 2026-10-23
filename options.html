@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ChatGPT Auto-Send Setup</title>
+    <style>
+      :root { color-scheme: light dark; font: 16px/1.5 system-ui, sans-serif; }
+      body { max-width: 680px; margin: 64px auto; padding: 0 24px; }
+      h1 { font-size: 1.7rem; margin-bottom: 0.2em; }
+      p, li { line-height: 1.6; }
+      label { display: block; margin: 24px 0 8px; font-weight: 600; }
+      .url-row { display: flex; gap: 8px; }
+      input { min-width: 0; flex: 1; padding: 10px; font: 14px ui-monospace, monospace; }
+      button { padding: 10px 16px; cursor: pointer; }
+      button:disabled { cursor: not-allowed; }
+      .hint { opacity: 0.75; font-size: 0.9rem; }
+      code { font-family: ui-monospace, monospace; }
+      @media (max-width: 560px) { .url-row { flex-direction: column; } }
+    </style>
+    <script src="options.js" defer></script>
+  </head>
+  <body>
+    <h1>ChatGPT Auto-Send</h1>
+    <p>Your extension has generated a private, random secret for this browser profile. Set up your site-search shortcut once, then prompts send automatically without any approval popups.</p>
+    <label for="search-url">Your site-search URL</label>
+    <div class="url-row">
+      <input id="search-url" type="text" readonly aria-label="Site-search URL" value="Loading…">
+      <button id="copy" type="button" disabled>Copy URL</button>
+    </div>
+    <p id="status" class="hint" role="status" aria-live="polite">Generating your setup URL…</p>
+    <ol>
+      <li>Open <code>chrome://settings/searchEngines</code> (or the equivalent settings page in Dia).</li>
+      <li>Under <strong>Site search</strong>, add or edit <strong>ChatGPT</strong> with shortcut <code>c</code>.</li>
+      <li>Paste the URL above into <strong>URL with %s in place of query</strong>.</li>
+    </ol>
+    <p>Now type <code>c</code> + Space, your prompt, and Enter. Only searches initiated from the address bar with this secret are allowed to auto-send.</p>
+    <p class="hint">Keep this URL private. It is stored in your browser settings and contains a secret, although the extension also independently checks the navigation source.</p>
+  </body>
+</html>
