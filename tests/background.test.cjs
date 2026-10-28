@@ -60,7 +60,7 @@ function makeWorker({ secret = SECRET } = {}) {
   });
 
   const target = ({ q = "test prompt", token = SECRET } = {}) =>
-    `https://chatgpt.com/?q=${encodeURIComponent(q)}&autosend=${token}`;
+    `https://chatgpt.com/work?q=${encodeURIComponent(q)}&autosend=${token}`;
 
   async function nav({
     tabId = 1,
@@ -115,7 +115,7 @@ test("generates a 128-bit secret automatically and opens one-time setup", async 
   assert.equal(worker.getLocalAccessLevel(), "TRUSTED_CONTEXTS");
 
   const setup = await worker.getSetupUrl();
-  assert.equal(setup.url, `https://chatgpt.com/?q=%s&autosend=${worker.getSecret()}`);
+  assert.equal(setup.url, `https://chatgpt.com/work?q=%s&autosend=${worker.getSecret()}`);
 });
 
 test("upgrade from autosend=1 opens setup only when a new secret is needed", async () => {
@@ -141,6 +141,98 @@ test("an omnibox keyword navigation is approved exactly once", async () => {
   assert.equal(first.approved, true);
   assert.equal(first.query, "send this");
   assert.equal(replay.approved, false);
+});
+
+test("legacy / site-search shortcut securely redirects to /work and approves it once", async () => {
+  const worker = makeWorker();
+  const legacyUrl = `https://chatgpt.com/?q=existing%20shortcut&autosend=${SECRET}`;
+  await worker.nav({ url: legacyUrl, documentId: "legacy-document" });
+  const legacy = await worker.message({ senderUrl: legacyUrl, documentId: "legacy-document" });
+  assert.equal(legacy.approved, true);
+  assert.equal(legacy.query, "existing shortcut");
+  const destination = new URL(legacy.redirectUrl);
+  assert.equal(destination.pathname, "/work");
+  assert.equal(destination.searchParams.get("q"), "existing shortcut");
+  assert.equal(destination.searchParams.get("autosend"), SECRET);
+  assert.match(destination.searchParams.get("autosend_handoff"), /^[a-f0-9]{32}$/);
+
+  // A legitimate location.replace looks like a client redirect, which is
+  // allowed only with this single-use, tab-bound handoff ticket.
+  await worker.nav({
+    url: legacy.redirectUrl,
+    documentId: "work-document",
+    transitionType: "link",
+    transitionQualifiers: ["client_redirect"]
+  });
+  const approval = await worker.message({ senderUrl: legacy.redirectUrl, documentId: "work-document" });
+  assert.equal(approval.approved, true);
+  assert.equal(approval.query, "existing shortcut");
+  assert.equal((await worker.message({ senderUrl: legacy.redirectUrl, documentId: "work-document" })).approved, false);
+});
+
+test("a handoff is tab-bound and cannot be replayed, forged, or reused on another path", async () => {
+  const worker = makeWorker();
+  const legacyUrl = `https://chatgpt.com/?q=hello&autosend=${SECRET}`;
+  await worker.nav({ url: legacyUrl, documentId: "legacy-document" });
+  const { redirectUrl } = await worker.message({ senderUrl: legacyUrl, documentId: "legacy-document" });
+
+  const forged = new URL(redirectUrl);
+  forged.searchParams.set("autosend_handoff", "ffffffffffffffffffffffffffffffff");
+  await worker.nav({ url: forged.href, documentId: "forged" });
+  assert.equal((await worker.message({ documentId: "forged" })).approved, false);
+
+  await worker.nav({ url: redirectUrl, tabId: 2, documentId: "other-tab" });
+  assert.equal((await worker.message({ tabId: 2, documentId: "other-tab" })).approved, false);
+
+  const wrongQuery = new URL(redirectUrl);
+  wrongQuery.searchParams.set("q", "different prompt");
+  await worker.nav({ url: wrongQuery.href, documentId: "wrong-query" });
+  assert.equal((await worker.message({ documentId: "wrong-query" })).approved, false);
+
+  const wrongPath = new URL(redirectUrl);
+  wrongPath.pathname = "/";
+  await worker.nav({ url: wrongPath.href, documentId: "wrong-path" });
+  assert.equal((await worker.message({ documentId: "wrong-path" })).approved, false);
+
+  await worker.nav({ url: redirectUrl, documentId: "work-document" });
+  assert.equal((await worker.message({ documentId: "work-document" })).approved, true);
+
+  await worker.nav({ url: redirectUrl, documentId: "replay" });
+  assert.equal((await worker.message({ documentId: "replay" })).approved, false);
+});
+
+test("a handoff cannot authorize the original document or a late redirect", async () => {
+  const worker = makeWorker();
+  const legacyUrl = `https://chatgpt.com/?q=hello&autosend=${SECRET}`;
+  await worker.nav({ url: legacyUrl, documentId: "original" });
+  const { redirectUrl } = await worker.message({ senderUrl: legacyUrl, documentId: "original" });
+  await worker.nav({ url: redirectUrl, documentId: "original", transitionType: "link" });
+  assert.equal((await worker.message({ documentId: "original" })).approved, false);
+  worker.advance(10001);
+  await worker.nav({ url: redirectUrl, documentId: "late", transitionType: "link" });
+  assert.equal((await worker.message({ documentId: "late" })).approved, false);
+});
+
+test("parallel navigations cannot reuse a single handoff ticket", async () => {
+  const worker = makeWorker();
+  const legacyUrl = `https://chatgpt.com/?q=hello&autosend=${SECRET}`;
+  await worker.nav({ url: legacyUrl, documentId: "original" });
+  const { redirectUrl } = await worker.message({ senderUrl: legacyUrl, documentId: "original" });
+  await Promise.all([
+    worker.nav({ url: redirectUrl, documentId: "destination-1" }),
+    worker.nav({ url: redirectUrl, documentId: "destination-2" })
+  ]);
+  const approvals = await Promise.all([
+    worker.message({ documentId: "destination-1" }),
+    worker.message({ documentId: "destination-2" })
+  ]);
+  assert.equal(approvals.filter((result) => result.approved).length, 1);
+});
+
+test("ordinary redirects to /work without a handoff ticket are never authorized", async () => {
+  const worker = makeWorker();
+  await worker.nav({ transitionType: "link", transitionQualifiers: ["client_redirect"] });
+  assert.equal((await worker.message()).approved, false);
 });
 
 test("allows generated omnibox navigations", async () => {
