@@ -8,9 +8,7 @@ const OMNIBOX_TRANSITIONS = new Set(["typed", "keyword", "generated"]);
 const APPROVAL_TTL_MS = 30000;
 const APPROVAL_WAIT_ATTEMPTS = 20;
 const APPROVAL_WAIT_MS = 100;
-const HANDOFF_TTL_MS = 10000;
 const pendingApprovals = new Set();
-const pendingHandoffs = new Set();
 let secretPromise;
 let setupOpened = false;
 
@@ -51,23 +49,23 @@ chrome.runtime.onInstalled.addListener(async ({ reason }) => {
 });
 
 const approvalKey = (tabId, documentId) => `approval:${tabId}:${documentId}`;
-const handoffKey = (tabId) => `handoff:${tabId}`;
-
-function randomToken() {
-  return Array.from(crypto.getRandomValues(new Uint8Array(16)),
-    (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-function validAge(at, ttl) {
-  const age = Date.now() - at;
-  return age >= 0 && age <= ttl;
-}
 
 chrome.webNavigation.onCommitted.addListener(async (details) => {
-  if (details.frameId !== 0 || !details.documentId) return;
+  if (details.frameId !== 0 || !details.documentId ||
+      !OMNIBOX_TRANSITIONS.has(details.transitionType)) return;
+
+  // Dia's `typed` site-search visits carry the address-bar qualifier. Do not
+  // approve a navigation merely because some other source labeled it typed.
+  if (details.transitionType === "typed" &&
+      !details.transitionQualifiers?.includes("from_address_bar")) return;
+
+  // A redirect must not inherit an otherwise eligible transition. The
+  // browser exposes redirects as qualifiers, regardless of transition type.
+  if (details.transitionQualifiers?.some((qualifier) =>
+    qualifier === "server_redirect" || qualifier === "client_redirect")) return;
 
   const url = new URL(details.url);
-  if (url.origin !== "https://chatgpt.com" || !["/", "/work"].includes(url.pathname)) return;
+  if (url.origin !== "https://chatgpt.com" || url.pathname !== "/") return;
 
   const secrets = url.searchParams.getAll("autosend");
   const queries = url.searchParams.getAll("q");
@@ -76,43 +74,12 @@ chrome.webNavigation.onCommitted.addListener(async (details) => {
   try {
     const { secret } = await getSecret();
     if (secrets[0] !== secret) return;
-
-    // A legacy site-search URL points at / instead of /work. After that
-    // original omnibox navigation is approved, the content script redirects
-    // once to /work with a short-lived, tab-bound ticket. This exception must
-    // NOT make arbitrary link/redirect navigations eligible for auto-send.
-    const tickets = url.searchParams.getAll("autosend_handoff");
-    if (tickets.length) {
-      if (url.pathname !== "/work" || tickets.length !== 1) return;
-      const key = handoffKey(details.tabId);
-      if (pendingHandoffs.has(key)) return;
-      pendingHandoffs.add(key);
-      try {
-        const { [key]: handoff } = await chrome.storage.session.get(key);
-        if (!handoff || handoff.ticket !== tickets[0] ||
-            handoff.query !== queries[0].trim() ||
-            handoff.fromDocumentId === details.documentId ||
-            !validAge(handoff.at, HANDOFF_TTL_MS)) return;
-        await chrome.storage.session.remove(key);
-      } finally {
-        pendingHandoffs.delete(key);
-      }
-    } else {
-      if (!OMNIBOX_TRANSITIONS.has(details.transitionType)) return;
-      // Dia uses typed + from_address_bar. Chrome uses keyword/generated.
-      if (details.transitionType === "typed" &&
-          !details.transitionQualifiers?.includes("from_address_bar")) return;
-      if (details.transitionQualifiers?.some((qualifier) =>
-        qualifier === "server_redirect" || qualifier === "client_redirect")) return;
-    }
-
     // The key identifies the *document*, not merely the tab. A subsequent
-    // unapproved link/redirect cannot consume another document's approval.
+    // link/redirect in the same tab cannot consume an earlier approval.
     await chrome.storage.session.set({
       [approvalKey(details.tabId, details.documentId)]: {
         at: Date.now(),
-        query: queries[0].trim(),
-        pathname: url.pathname
+        query: queries[0].trim()
       }
     });
   } catch (error) {
@@ -136,8 +103,9 @@ async function consumeApproval(tabId, documentId) {
       const { [key]: approval } = await chrome.storage.session.get(key);
       if (approval !== undefined) {
         await chrome.storage.session.remove(key);
+        const age = Date.now() - approval?.at;
         if (typeof approval?.query === "string" && approval.query &&
-            validAge(approval.at, APPROVAL_TTL_MS)) return approval;
+            age >= 0 && age <= APPROVAL_TTL_MS) return approval.query;
         return null;
       }
       await delay(APPROVAL_WAIT_MS);
@@ -153,7 +121,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       sender.id === chrome.runtime.id &&
       sender.url === chrome.runtime.getURL("options.html")) {
     getSecret()
-      .then(({ secret }) => respond({ url: `https://chatgpt.com/work?q=%s&autosend=${secret}` }))
+      .then(({ secret }) => respond({ url: `https://chatgpt.com/?q=%s&autosend=${secret}` }))
       .catch(() => respond({ error: "Could not load the setup URL. Reload this page." }));
     return true;
   }
@@ -163,28 +131,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       !sender.url?.startsWith("https://chatgpt.com/")) return false;
 
   consumeApproval(sender.tab.id, sender.documentId)
-    .then(async (approval) => {
-      if (!approval) return respond({ approved: false });
-      const { query } = approval;
-
-      if (approval.pathname !== "/") return respond({ approved: true, query });
-
-      // Transparently migrate existing /?q=... shortcuts without requiring a
-      // browser-settings change. The redirect can only be authorized after a
-      // genuine, one-use omnibox approval for the original document.
-      const ticket = randomToken();
-      const { secret } = await getSecret();
-      await chrome.storage.session.set({
-        [handoffKey(sender.tab.id)]: {
-          ticket, query, fromDocumentId: sender.documentId, at: Date.now()
-        }
-      });
-      const destination = new URL("https://chatgpt.com/work");
-      destination.searchParams.set("q", query);
-      destination.searchParams.set("autosend", secret);
-      destination.searchParams.set("autosend_handoff", ticket);
-      respond({ approved: true, query, redirectUrl: destination.href });
-    })
+    .then((query) => respond(query ? { approved: true, query } : { approved: false }))
     .catch(() => respond({ approved: false }));
   return true;
 });
@@ -194,5 +141,4 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   const entries = await chrome.storage.session.get(null);
   const keys = Object.keys(entries).filter((key) => key.startsWith(prefix));
   if (keys.length) await chrome.storage.session.remove(keys);
-  await chrome.storage.session.remove(handoffKey(tabId));
 });

@@ -8,70 +8,19 @@ const SECRET = "abcdef0123456789abcdef0123456789";
 const source = readFileSync(join(__dirname, "..", "content.js"), "utf8");
 
 function makePage({
-  url = `https://chatgpt.com/work?autosend=${SECRET}`,
+  url = `https://chatgpt.com/?autosend=${SECRET}`,
   prefill = "",
   prefillAt = 0,
   composerAt = 0,
   sendEnabledAt = 0,
   sendSelector = 'button[data-testid="send-button"]',
   approved = true,
-  approvedQuery,
-  redirectUrl,
-  toggleAt = 0,
-  toggleMissing = false,
-  initialMode = "work",
-  switchDelay = 0,
-  switchEffect = "aria",
-  workReturnsAt = Infinity
+  approvedQuery
 } = {}) {
   let time = 0;
   let entered = "";
-  let chatSelectedAt = initialMode === "chat" ? 0 : Infinity;
   const sends = [];
   const warnings = [];
-  const chatClicks = [];
-  const redirects = [];
-
-  const window = {
-    location: {
-      href: url,
-      pathname: new URL(url).pathname,
-      replace(next) { redirects.push(next); }
-    }
-  };
-
-  function chatSelected() {
-    const selected = time >= chatSelectedAt && time < workReturnsAt;
-    if (selected && switchEffect === "route") window.location.pathname = "/";
-    if (selected && switchEffect === "other-route") window.location.pathname = "/c/old-chat";
-    return selected;
-  }
-
-  const toggleParent = {
-    parentElement: null,
-    querySelectorAll() { return [chatButton, workButton]; }
-  };
-  const chatButton = {
-    textContent: "Chat",
-    parentElement: toggleParent,
-    disabled: false,
-    getAttribute(attr) {
-      if (attr === "aria-selected" && switchEffect === "aria") return String(chatSelected());
-      return null;
-    },
-    click() {
-      chatClicks.push(time);
-      if (switchEffect !== "never") chatSelectedAt = time + switchDelay;
-    }
-  };
-  const workButton = {
-    textContent: "Work",
-    parentElement: toggleParent,
-    getAttribute(attr) {
-      if (attr === "aria-selected" && switchEffect === "aria") return String(!chatSelected());
-      return null;
-    }
-  };
 
   class TextArea {
     get value() {
@@ -99,14 +48,11 @@ function makePage({
       return time >= composerAt && selector === "#prompt-textarea" ? prompt : null;
     },
     querySelectorAll(selector) {
-      if (selector.startsWith("button, [role=")) {
-        return !toggleMissing && time >= toggleAt &&
-          !(["route", "other-route"].includes(switchEffect) && chatSelected()) ? [chatButton, workButton] : [];
-      }
       return selector === sendSelector ? [sendButton] : [];
     }
   };
 
+  const window = { location: { href: url } };
   const query = approvedQuery === undefined
     ? (new URL(url).searchParams.get("q")?.trim() || prefill)
     : approvedQuery;
@@ -115,7 +61,7 @@ function makePage({
     document,
     URL,
     chrome: {
-      runtime: { sendMessage: async () => ({ approved, query, redirectUrl }) }
+      runtime: { sendMessage: async () => ({ approved, query }) }
     },
     HTMLTextAreaElement: TextArea,
     HTMLInputElement: class {},
@@ -135,8 +81,6 @@ function makePage({
     prompt,
     sends,
     warnings,
-    chatClicks,
-    redirects,
     execute() { vm.runInContext(source, context); },
     // Timers use setImmediate, so even a 20s simulated timeout completes fast.
     async settle() {
@@ -154,14 +98,14 @@ test("sends a prefilled composer when ChatGPT has already removed q", async () =
 
 test("captures q before ChatGPT removes it and waits for the composer", async () => {
   const page = makePage({
-    url: `https://chatgpt.com/work?q=hello%20world&autosend=${SECRET}`,
+    url: `https://chatgpt.com/?q=hello%20world&autosend=${SECRET}`,
     prefill: "hello world",
     prefillAt: 1200,
     composerAt: 600,
     sendEnabledAt: 1600
   });
   page.execute();
-  page.window.location.href = `https://chatgpt.com/work?autosend=${SECRET}`;
+  page.window.location.href = `https://chatgpt.com/?autosend=${SECRET}`;
   await page.settle();
   assert.deepEqual(page.sends.map((send) => send.text), ["hello world"]);
   assert.ok(page.sends[0].at >= 1600);
@@ -169,7 +113,7 @@ test("captures q before ChatGPT removes it and waits for the composer", async ()
 
 test("fills from q if ChatGPT never prepopulates the composer", async () => {
   const page = makePage({
-    url: `https://chatgpt.com/work?q=fallback&autosend=${SECRET}`
+    url: `https://chatgpt.com/?q=fallback&autosend=${SECRET}`
   });
   page.execute();
   await page.settle();
@@ -206,7 +150,7 @@ test("never submits an empty composer if q is gone", async () => {
 
 test("does not submit an unrelated pre-existing draft", async () => {
   const page = makePage({
-    url: `https://chatgpt.com/work?q=expected&autosend=${SECRET}`,
+    url: `https://chatgpt.com/?q=expected&autosend=${SECRET}`,
     prefill: "different text"
   });
   page.execute();
@@ -255,95 +199,10 @@ test("never sends without a query in the approved navigation", async () => {
 
 test("never sends if the URL query differs from the approved navigation", async () => {
   const page = makePage({
-    url: `https://chatgpt.com/work?q=original&autosend=${SECRET}`,
+    url: `https://chatgpt.com/?q=original&autosend=${SECRET}`,
     approvedQuery: "tampered",
     prefill: "tampered"
   });
-  page.execute();
-  await page.settle();
-  assert.equal(page.sends.length, 0);
-});
-
-test("switches from Work to Chat before sending, even if composer was ready", async () => {
-  const page = makePage({ prefill: "chat only", switchDelay: 1400 });
-  page.execute();
-  await page.settle();
-  assert.equal(page.chatClicks.length, 1);
-  assert.deepEqual(page.sends.map(({ text }) => text), ["chat only"]);
-  assert.ok(page.sends[0].at >= 1400);
-});
-
-test("waits for the Chat / Work selector to render before clicking", async () => {
-  const page = makePage({ prefill: "delayed toggle", toggleAt: 1700 });
-  page.execute();
-  await page.settle();
-  assert.ok(page.chatClicks[0] >= 1700);
-  assert.equal(page.sends.length, 1);
-});
-
-test("supports the Chat switch removing the toggle via an SPA route change", async () => {
-  const page = makePage({ prefill: "route change", switchEffect: "route", switchDelay: 400 });
-  page.execute();
-  await page.settle();
-  assert.equal(page.window.location.pathname, "/");
-  assert.equal(page.sends.length, 1);
-});
-
-test("never sends after an unrelated route change during the mode switch", async () => {
-  const page = makePage({ prefill: "must not send", switchEffect: "other-route" });
-  page.execute();
-  await page.settle();
-  assert.equal(page.window.location.pathname, "/c/old-chat");
-  assert.equal(page.sends.length, 0);
-});
-
-test("never sends if the Chat / Work selector never appears", async () => {
-  const page = makePage({ prefill: "must not send", toggleMissing: true });
-  page.execute();
-  await page.settle();
-  assert.equal(page.sends.length, 0);
-  assert.match(page.warnings.join(" "), /Could not verify Chat mode/);
-});
-
-test("never sends if clicking Chat does not confirm the mode switch", async () => {
-  const page = makePage({ prefill: "must not send", switchEffect: "never" });
-  page.execute();
-  await page.settle();
-  assert.ok(page.chatClicks.length > 0);
-  assert.equal(page.sends.length, 0);
-});
-
-test("never sends if Work becomes active again while waiting for the composer", async () => {
-  const page = makePage({ prefill: "must not send", composerAt: 1200, workReturnsAt: 800 });
-  page.execute();
-  await page.settle();
-  assert.equal(page.sends.length, 0);
-  assert.match(page.warnings.join(" "), /Chat mode changed/);
-});
-
-test("does not click Chat again when it is already selected", async () => {
-  const page = makePage({ prefill: "already chat", initialMode: "chat" });
-  page.execute();
-  await page.settle();
-  assert.equal(page.chatClicks.length, 0);
-  assert.equal(page.sends.length, 1);
-});
-
-test("legacy root shortcuts redirect to /work rather than sending on root", async () => {
-  const workUrl = `https://chatgpt.com/work?q=legacy&autosend=${SECRET}&autosend_handoff=ticket`;
-  const page = makePage({
-    url: `https://chatgpt.com/?q=legacy&autosend=${SECRET}`,
-    prefill: "legacy",
-    redirectUrl: workUrl
-  });
-  page.execute();
-  await page.settle();
-  assert.deepEqual(page.redirects, [workUrl]);
-  assert.equal(page.sends.length, 0);
-});
-
-test("never sends from root without a verified migration handoff", async () => {
-  const page = makePage({ url: `https://chatgpt.com/?q=root&autosend=${SECRET}`, prefill: "root" });
   page.execute();
   await page.settle();
   assert.equal(page.sends.length, 0);
