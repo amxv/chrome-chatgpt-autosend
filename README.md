@@ -23,6 +23,11 @@ from version 1.1.0, you must also replace your old site-search URL:**
 `autosend=1` is no longer accepted. Setup will open automatically on the first
 upgrade; you only need to change the shortcut once.
 
+**Version 1.3.1 returns to opening `chatgpt.com/` directly.** If you manually
+changed your site-search URL to `/work` while using 1.3.0, change it back to
+the root URL shown on the extension's Setup page. The forced `/work` navigation
+is preserved separately in the `backup/forced-work-entry-chat-switch` branch.
+
 ## Configure your Chrome site search
 
 Open:
@@ -45,6 +50,12 @@ c what is the fastest way to learn Rust?
 
 Chrome recognizes `c` + Space (or Tab) as the site-search shortcut. When you press Enter, ChatGPT opens and the extension automatically submits the prompt once the composer is ready. This also works when ChatGPT removes the `q` URL parameter after filling its composer.
 
+If the Chat / Work selector appears at the top of the page, the extension checks
+that **Chat** is selected, and switches from **Work** to **Chat** when needed.
+It only submits after verifying Chat is selected. If no selector is present,
+it sends normally; if a selector is present but Chat cannot be confirmed,
+it does not send to avoid accidentally submitting in Work mode.
+
 ## Notes
 
 - The extension only auto-sends when `autosend` matches your secret **and**
@@ -65,9 +76,12 @@ Chrome recognizes `c` + Space (or Tab) as the site-search shortcut. When you pre
 - It retains the original search query from the approved browser navigation,
   even when ChatGPT later strips `q` from the address bar.
 - ChatGPT's web UI can change. The script includes several send-button selectors plus an Enter-key fallback.
+- The optional Chat / Work check does not navigate to `/work` or rely on that
+  interface being available. It briefly allows the selector to render before
+  submitting, and fails closed if a visible selector cannot confirm Chat mode.
 
 ## Tests
 
 Run `node --test tests/*.test.cjs` to test authorization, malicious navigations,
-URL cleanup, delayed composer rendering, and one-shot submission without a
-ChatGPT login.
+URL cleanup, delayed composer rendering, optional Chat / Work mode switching,
+and one-shot submission without a ChatGPT login.

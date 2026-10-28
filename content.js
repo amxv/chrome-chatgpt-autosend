@@ -19,6 +19,82 @@
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+  // ChatGPT sometimes offers a Chat / Work switcher at the top of the page.
+  // Do not depend on that UI existing: the normal Chat composer still works
+  // without it. When it does exist, however, never submit in Work mode.
+  const MODE_CONTROLS = 'button, [role="tab"], [role="radio"], [role="button"], a[href]';
+  const MODE_GRACE_MS = 800;
+  const MODE_SETTLE_MS = 500;
+  let sawModeToggle = false;
+  let lastChatClick = -Infinity;
+
+  function isVisible(el) {
+    const style = getComputedStyle(el);
+    return style.display !== "none" && style.visibility !== "hidden" &&
+      el.getAttribute("aria-hidden") !== "true" &&
+      (typeof el.getClientRects !== "function" || el.getClientRects().length > 0);
+  }
+
+  function isTopControl(el) {
+    if (typeof el.getBoundingClientRect !== "function") return true;
+    const bounds = el.getBoundingClientRect();
+    return bounds.top >= 0 && bounds.top < 300;
+  }
+
+  function modeLabel(el) {
+    return (el.textContent || el.getAttribute("aria-label") || "").trim();
+  }
+
+  function getModeToggle() {
+    for (const chat of document.querySelectorAll(MODE_CONTROLS)) {
+      if (modeLabel(chat) !== "Chat" || !isVisible(chat) || !isTopControl(chat)) continue;
+      let parent = chat.parentElement;
+      for (let depth = 0; parent && depth < 4; depth++, parent = parent.parentElement) {
+        const controls = [...parent.querySelectorAll(MODE_CONTROLS)].filter(isVisible);
+        if (controls.length > 3) break;
+        const work = controls.find((el) => modeLabel(el) === "Work" && isTopControl(el));
+        if (work && controls.filter((el) => modeLabel(el) === "Chat").length === 1) {
+          return { chat, work };
+        }
+      }
+    }
+    return null;
+  }
+
+  function activeMode(el) {
+    for (const attr of ["aria-selected", "aria-pressed", "aria-checked", "data-active", "data-selected"]) {
+      const state = el.getAttribute(attr);
+      if (state === "true") return true;
+      if (state === "false") return false;
+    }
+    const state = el.getAttribute("data-state");
+    if (["active", "on", "checked"].includes(state)) return true;
+    if (["inactive", "off", "unchecked"].includes(state)) return false;
+    if (el.getAttribute("aria-current") === "page" ||
+        el.classList?.contains("active") || el.classList?.contains("selected")) return true;
+    return null;
+  }
+
+  function chatModeReady() {
+    const toggle = getModeToggle();
+    if (!toggle) return !sawModeToggle;
+    sawModeToggle = true;
+
+    const chatActive = activeMode(toggle.chat) === true;
+    const workActive = activeMode(toggle.work) === true;
+    if (chatActive && !workActive && Date.now() - lastChatClick >= MODE_SETTLE_MS) {
+      return true;
+    }
+
+    // If Work is selected (or the selection is indeterminate), try Chat.
+    // Fail closed if ChatGPT never confirms the change.
+    if (!chatActive && !toggle.chat.disabled && Date.now() - lastChatClick >= 1500) {
+      lastChatClick = Date.now();
+      toggle.chat.click();
+    }
+    return false;
+  }
+
   function getPromptElement() {
     return (
       document.querySelector("#prompt-textarea") ||
@@ -118,6 +194,13 @@
     let triedEnter = false;
 
     while (Date.now() < deadline) {
+      const readyForChat = chatModeReady();
+      // Give the optional mode switcher time to render before submitting a
+      // composer that might otherwise be ready immediately.
+      if (!readyForChat || Date.now() - startedAt < MODE_GRACE_MS) {
+        await sleep(200);
+        continue;
+      }
       const prompt = getPromptElement();
 
       if (prompt) {
@@ -135,14 +218,14 @@
         if (current && current === query) {
           const sendButton = getSendButton(prompt);
 
-          if (sendButton) {
+          if (sendButton && chatModeReady()) {
             sendButton.click();
             return;
           }
 
           // Give the UI time to enable the send button before trying Enter.
           // Only dispatch it once, since retries could duplicate a submission.
-          if (!triedEnter && Date.now() - startedAt >= 4000) {
+          if (!triedEnter && Date.now() - startedAt >= 4000 && chatModeReady()) {
             triedEnter = true;
             prompt.focus();
             const eventInit = {
@@ -168,8 +251,9 @@
       await sleep(200);
     }
 
-    console.warn(
-      "[ChatGPT Auto-Send for Chrome] Timed out waiting for a matching prompt and enabled send button."
+    console.warn(sawModeToggle
+      ? "[ChatGPT Auto-Send for Chrome] Chat mode could not be verified; prompt was NOT sent."
+      : "[ChatGPT Auto-Send for Chrome] Timed out waiting for a matching prompt and enabled send button."
     );
   }
 

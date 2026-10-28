@@ -15,12 +15,65 @@ function makePage({
   sendEnabledAt = 0,
   sendSelector = 'button[data-testid="send-button"]',
   approved = true,
-  approvedQuery
+  approvedQuery,
+  modeToggleAt = Infinity,
+  initialMode = "work",
+  switchDelay = 0,
+  switchable = true,
+  modeStateSource = "aria",
+  modeTop = 40,
+  hideModeAfterClick = false,
+  workReturnsAt = Infinity
 } = {}) {
   let time = 0;
   let entered = "";
   const sends = [];
   const warnings = [];
+  const chatClicks = [];
+  let selectedChatAt = initialMode === "chat" ? 0 : Infinity;
+  let workReturned = false;
+
+  function chatSelected() {
+    if (!workReturned && time >= workReturnsAt) {
+      workReturned = true;
+      selectedChatAt = Infinity;
+    }
+    return time >= selectedChatAt;
+  }
+
+  const toggleParent = {
+    parentElement: null,
+    querySelectorAll() { return [chatControl, workControl]; }
+  };
+  const makeModeControl = (label) => ({
+    textContent: label,
+    parentElement: toggleParent,
+    disabled: false,
+    getBoundingClientRect() { return { top: modeTop }; },
+    getAttribute(attribute) {
+      if (attribute === "aria-selected" && modeStateSource === "aria") {
+        return String(label === "Chat" ? chatSelected() : !chatSelected());
+      }
+      if (attribute === "data-state" && modeStateSource === "data-state") {
+        return (label === "Chat" ? chatSelected() : !chatSelected()) ? "active" : "inactive";
+      }
+      return null;
+    },
+    classList: {
+      contains(token) {
+        return modeStateSource === "class" && token === "selected" &&
+          (label === "Chat" ? chatSelected() : !chatSelected());
+      }
+    },
+    click() {
+      if (label === "Chat") {
+        chatClicks.push(time);
+        if (switchable) selectedChatAt = time + switchDelay;
+      }
+    }
+  });
+  const chatControl = makeModeControl("Chat");
+  const workControl = makeModeControl("Work");
 
   class TextArea {
     get value() {
@@ -48,6 +101,10 @@ function makePage({
       return time >= composerAt && selector === "#prompt-textarea" ? prompt : null;
     },
     querySelectorAll(selector) {
+      if (selector.startsWith('button, [role="tab"]')) {
+        return time >= modeToggleAt && !(hideModeAfterClick && chatClicks.length > 0)
+          ? [chatControl, workControl] : [];
+      }
       return selector === sendSelector ? [sendButton] : [];
     }
   };
@@ -81,6 +138,7 @@ function makePage({
     prompt,
     sends,
     warnings,
+    chatClicks,
     execute() { vm.runInContext(source, context); },
     // Timers use setImmediate, so even a 20s simulated timeout completes fast.
     async settle() {
@@ -206,4 +264,93 @@ test("never sends if the URL query differs from the approved navigation", async 
   page.execute();
   await page.settle();
   assert.equal(page.sends.length, 0);
+});
+
+test("without a mode toggle, sends directly from the original / page", async () => {
+  const page = makePage({ url: `https://chatgpt.com/?q=normal&autosend=${SECRET}`, prefill: "normal" });
+  page.execute();
+  await page.settle();
+  assert.equal(page.sends.length, 1);
+  assert.ok(page.sends[0].at >= 800);
+  assert.equal(page.chatClicks.length, 0);
+});
+
+test("when the top toggle already shows Chat, sends without clicking it", async () => {
+  const page = makePage({ prefill: "hi", modeToggleAt: 0, initialMode: "chat" });
+  page.execute();
+  await page.settle();
+  assert.equal(page.sends.length, 1);
+  assert.equal(page.chatClicks.length, 0);
+});
+
+test("when Work is selected, switches to Chat before submitting", async () => {
+  const page = makePage({ prefill: "chat please", modeToggleAt: 0, switchDelay: 1300 });
+  page.execute();
+  await page.settle();
+  assert.equal(page.chatClicks.length, 1);
+  assert.equal(page.sends.length, 1);
+  assert.ok(page.sends[0].at >= 1300);
+});
+
+test("waits for a delayed top toggle before sending", async () => {
+  const page = makePage({ prefill: "delayed mode", modeToggleAt: 600, initialMode: "work" });
+  page.execute();
+  await page.settle();
+  assert.equal(page.sends.length, 1);
+  assert.equal(page.chatClicks.length, 1);
+  assert.ok(page.chatClicks[0] >= 600);
+  assert.ok(page.sends[0].at >= page.chatClicks[0] + 500);
+});
+
+test("supports top toggle active-state classes rather than ARIA", async () => {
+  const page = makePage({ prefill: "class state", modeToggleAt: 0, modeStateSource: "class" });
+  page.execute();
+  await page.settle();
+  assert.equal(page.chatClicks.length, 1);
+  assert.equal(page.sends.length, 1);
+});
+
+test("recognizes an active Chat state on data-state attributes", async () => {
+  const page = makePage({ prefill: "data-state", modeToggleAt: 0, modeStateSource: "data-state" });
+  page.execute();
+  await page.settle();
+  assert.equal(page.chatClicks.length, 1);
+  assert.equal(page.sends.length, 1);
+});
+
+test("rechecks the mode immediately before submitting a delayed composer", async () => {
+  const page = makePage({
+    prefill: "still safe", modeToggleAt: 0, initialMode: "chat",
+    sendEnabledAt: 1800, workReturnsAt: 1200, switchDelay: 500
+  });
+  page.execute();
+  await page.settle();
+  assert.equal(page.chatClicks.length, 1);
+  assert.equal(page.sends.length, 1);
+  assert.ok(page.sends[0].at >= page.chatClicks[0] + 500);
+});
+
+test("will not submit in Work if the mode switch never succeeds", async () => {
+  const page = makePage({ prefill: "don't send", modeToggleAt: 0, switchable: false });
+  page.execute();
+  await page.settle();
+  assert.ok(page.chatClicks.length > 0);
+  assert.equal(page.sends.length, 0);
+  assert.match(page.warnings.join(" "), /Chat mode could not be verified/);
+});
+
+test("will not send if the toggle disappears before confirming Chat", async () => {
+  const page = makePage({ prefill: "don't send", modeToggleAt: 0, hideModeAfterClick: true });
+  page.execute();
+  await page.settle();
+  assert.ok(page.chatClicks.length > 0);
+  assert.equal(page.sends.length, 0);
+});
+
+test("ignores unrelated Chat / Work controls outside the page header", async () => {
+  const page = makePage({ prefill: "just send", modeToggleAt: 0, modeTop: 600 });
+  page.execute();
+  await page.settle();
+  assert.equal(page.chatClicks.length, 0);
+  assert.equal(page.sends.length, 1);
 });
